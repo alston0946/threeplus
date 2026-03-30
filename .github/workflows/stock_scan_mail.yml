@@ -1,0 +1,75 @@
+name: stock-scan-mail
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "5 9 * * *"   # 北京时间 17:05（UTC 09:05）
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stock-scan-mail
+  cancel-in-progress: false
+
+jobs:
+  run-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Show Python version
+        run: python --version
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Prepare output directory
+        run: mkdir -p output
+
+      - name: Run stock scanner
+        env:
+          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+        run: python stock_scan.py
+
+      - name: Upload results as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stock-scan-results
+          path: output/*.csv
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Send result email
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_HOST }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USER }}
+          password: ${{ secrets.SMTP_PASS }}
+          subject: A股选股结果 - ${{ github.run_number }}
+          to: ${{ secrets.MAIL_TO }}
+          from: ${{ secrets.SMTP_USER }}
+          secure: true
+          body: |
+            本次 GitHub Actions 选股任务已完成。
+
+            仓库: ${{ github.repository }}
+            运行编号: ${{ github.run_number }}
+            分支: ${{ github.ref_name }}
+
+            已附上本次输出的 CSV 文件。
+          attachments: |
+            output/tushare_scheme2_selected_exclude_8b.csv
+            output/tushare_scheme2_failed_exclude_8b.csv

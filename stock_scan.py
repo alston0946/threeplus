@@ -35,7 +35,7 @@ import tushare as ts
 # =========================
 # 1. 基础配置
 # =========================
-TUSHARE_TOKEN = os.environ["2fb2a6db7b49177e002fc5bb72e309f4e660b90d7f8b282715656a74"]
+TUSHARE_TOKEN = os.environ["TUSHARE_TOKEN"]
 
 CODE_FILE = "data/a_share_codes_for_akshare.csv"
 ST_FILE = "data/st_stocks.csv"

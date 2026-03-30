@@ -1,28 +1,27 @@
 # -*- coding: utf-8 -*-
 """
-A股全市场选股脚本（适配 GitHub Actions）
+stock_scan.py
 
-逻辑：
-1、剔除 ST 股
-2、剔除市值 80 亿以下股票（使用本地文件 a_share_below_8b.csv）
-3、日线价格条件：
+用途：
+1. 从全市场股票池中筛选股票
+2. 剔除 ST 股
+3. 剔除市值 80 亿以下股票（根据本地文件）
+4. 日线价格条件：
    - close > MA20
    - close 离 MA20 不远
    - MA20 向上
    - MA20 > MA60
-4、日线 MACD 条件：
+5. 日线 MACD 条件：
    - 使用 Tushare 已计算好的因子
    - macd_dif_bfq > macd_dea_bfq > 0
-5、周线条件：
+6. 周线条件：
    - MA5 > MA10 > MA20
-6、月线条件：
+7. 月线条件：
    - MA5 > MA10 > MA20
+8. 输出入选结果和失败结果到 output/ 目录
 
-说明：
-- 适合在 GitHub Actions 中运行
-- TUSHARE_TOKEN 从环境变量读取
-- 数据文件从仓库 data/ 目录读取
-- 输出文件写入 output/ 目录，供 workflow 上传 artifact 和邮件发送
+GitHub Actions 中需要设置环境变量：
+- TUSHARE_TOKEN
 """
 
 import os
@@ -44,7 +43,7 @@ BELOW_8B_FILE = "data/a_share_below_8b.csv"
 OUTPUT_DIR = "output"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# 调试时可改成 20 / 50；正式全市场跑设为 None
+# 调试时可改成 20 / 50，正式跑设为 None
 TEST_LIMIT = None
 
 # 请求间隔
@@ -75,15 +74,31 @@ pro = ts.pro_api()
 def normalize_symbol_to_6(x):
     if pd.isna(x):
         return None
+
     s = str(x).strip()
+    if s.lower() == "nan" or s == "":
+        return None
+
     digits = "".join(ch for ch in s if ch.isdigit())
+
     if len(digits) >= 6:
         return digits[-6:]
+
     return None
 
 
 def to_ts_code(symbol6, exchange_cd=None):
-    if symbol6 is None or len(symbol6) != 6:
+    if pd.isna(symbol6):
+        return None
+
+    symbol6 = str(symbol6).strip()
+
+    if symbol6.lower() == "nan" or symbol6 == "":
+        return None
+
+    symbol6 = "".join(ch for ch in symbol6 if ch.isdigit())
+
+    if len(symbol6) != 6:
         return None
 
     ex = ""
@@ -101,7 +116,13 @@ def to_ts_code(symbol6, exchange_cd=None):
         return f"{symbol6}.SH"
     if symbol6.startswith(("000", "001", "002", "003", "300", "301")):
         return f"{symbol6}.SZ"
-    if symbol6.startswith(("430", "431", "432", "433", "834", "835", "836", "837", "838", "839", "870", "871", "872", "873", "874", "875", "876", "877", "878", "879", "920")):
+    if symbol6.startswith(
+        (
+            "430", "431", "432", "433", "834", "835", "836", "837",
+            "838", "839", "870", "871", "872", "873", "874", "875",
+            "876", "877", "878", "879", "920"
+        )
+    ):
         return f"{symbol6}.BJ"
 
     return None
@@ -134,6 +155,10 @@ def read_universe_from_csv(code_file):
     exchange_col = "exchangeCD" if "exchangeCD" in df.columns else None
 
     df["symbol6"] = df[symbol_col].apply(normalize_symbol_to_6)
+
+    # 先去掉无效代码，再转 ts_code
+    df = df.dropna(subset=["symbol6"]).copy()
+
     df["ts_code"] = df.apply(
         lambda row: to_ts_code(
             row["symbol6"],
@@ -145,7 +170,7 @@ def read_universe_from_csv(code_file):
     name_col = "secShortName" if "secShortName" in df.columns else None
     df["name"] = df[name_col] if name_col else ""
 
-    df = df.dropna(subset=["symbol6", "ts_code"]).copy()
+    df = df.dropna(subset=["ts_code"]).copy()
     df = df.drop_duplicates(subset=["ts_code"]).reset_index(drop=True)
     return df
 
@@ -206,6 +231,9 @@ def read_below_8b_set(below_8b_file):
     return below_8b_set
 
 
+# =========================
+# 4. 数据获取
+# =========================
 def fetch_daily(ts_code):
     try:
         df = pro.daily(
@@ -319,7 +347,7 @@ def fetch_daily_factor(ts_code):
 
 
 # =========================
-# 4. 条件判断
+# 5. 条件判断
 # =========================
 def check_daily_price_conditions(df_daily):
     if df_daily is None or len(df_daily) < 80:
@@ -426,134 +454,135 @@ def check_ma_order(df, label):
 
 
 # =========================
-# 5. 读取股票池和过滤名单
+# 6. 主流程
 # =========================
-universe_df = read_universe_from_csv(CODE_FILE)
-st_set = read_st_set(ST_FILE)
-below_8b_set = read_below_8b_set(BELOW_8B_FILE)
+def main():
+    universe_df = read_universe_from_csv(CODE_FILE)
+    st_set = read_st_set(ST_FILE)
+    below_8b_set = read_below_8b_set(BELOW_8B_FILE)
 
-# 剔除 ST
-universe_df = universe_df[~universe_df["symbol6"].isin(st_set)].copy()
+    universe_df = universe_df[~universe_df["symbol6"].isin(st_set)].copy()
+    universe_df = universe_df[~universe_df["symbol6"].isin(below_8b_set)].copy()
+    universe_df = universe_df.reset_index(drop=True)
 
-# 剔除 80亿以下市值股票
-universe_df = universe_df[~universe_df["symbol6"].isin(below_8b_set)].copy()
+    if TEST_LIMIT is not None:
+        universe_df = universe_df.head(TEST_LIMIT).copy()
 
-universe_df = universe_df.reset_index(drop=True)
+    print(f"ST股票数量: {len(st_set)}")
+    print(f"80亿以下股票数量: {len(below_8b_set)}")
+    print(f"待扫描股票数（剔除ST和80亿以下后）: {len(universe_df)}")
 
-if TEST_LIMIT is not None:
-    universe_df = universe_df.head(TEST_LIMIT).copy()
+    results = []
+    fails = []
 
-print(f"ST股票数量: {len(st_set)}")
-print(f"80亿以下股票数量: {len(below_8b_set)}")
-print(f"待扫描股票数（剔除ST和80亿以下后）: {len(universe_df)}")
+    for i, row in universe_df.iterrows():
+        ts_code = row["ts_code"]
+        symbol6 = row["symbol6"]
+        name = row["name"]
 
+        print(f"[{i+1}/{len(universe_df)}] {ts_code}")
 
-# =========================
-# 6. 扫描
-# =========================
-results = []
-fails = []
+        df_daily, err_daily = fetch_daily(ts_code)
+        if df_daily is None:
+            fails.append({
+                "ts_code": ts_code,
+                "symbol6": symbol6,
+                "name": name,
+                "reason": err_daily
+            })
+            time.sleep(SLEEP_SECONDS)
+            continue
 
-for i, row in universe_df.iterrows():
-    ts_code = row["ts_code"]
-    symbol6 = row["symbol6"]
-    name = row["name"]
+        ok_daily_price, info_daily = check_daily_price_conditions(df_daily)
+        if not ok_daily_price:
+            fails.append({
+                "ts_code": ts_code,
+                "symbol6": symbol6,
+                "name": name,
+                **info_daily
+            })
+            time.sleep(SLEEP_SECONDS)
+            continue
 
-    print(f"[{i+1}/{len(universe_df)}] {ts_code}")
+        df_factor, err_factor = fetch_daily_factor(ts_code)
+        if df_factor is None:
+            fails.append({
+                "ts_code": ts_code,
+                "symbol6": symbol6,
+                "name": name,
+                **info_daily,
+                "reason": err_factor
+            })
+            time.sleep(SLEEP_SECONDS)
+            continue
 
-    # 1) 日线价格条件
-    df_daily, err_daily = fetch_daily(ts_code)
-    if df_daily is None:
-        fails.append({
-            "ts_code": ts_code,
-            "symbol6": symbol6,
-            "name": name,
-            "reason": err_daily
-        })
-        time.sleep(SLEEP_SECONDS)
-        continue
+        ok_factor, info_factor = check_daily_macd_factor(df_factor)
+        if not ok_factor:
+            fails.append({
+                "ts_code": ts_code,
+                "symbol6": symbol6,
+                "name": name,
+                **info_daily,
+                **info_factor
+            })
+            time.sleep(SLEEP_SECONDS)
+            continue
 
-    ok_daily_price, info_daily = check_daily_price_conditions(df_daily)
-    if not ok_daily_price:
-        fails.append({
-            "ts_code": ts_code,
-            "symbol6": symbol6,
-            "name": name,
-            **info_daily
-        })
-        time.sleep(SLEEP_SECONDS)
-        continue
+        df_week, err_week = fetch_weekly(ts_code)
+        if df_week is None:
+            fails.append({
+                "ts_code": ts_code,
+                "symbol6": symbol6,
+                "name": name,
+                **info_daily,
+                **info_factor,
+                "reason": err_week
+            })
+            time.sleep(SLEEP_SECONDS)
+            continue
 
-    # 2) 日线 MACD 因子
-    df_factor, err_factor = fetch_daily_factor(ts_code)
-    if df_factor is None:
-        fails.append({
-            "ts_code": ts_code,
-            "symbol6": symbol6,
-            "name": name,
-            **info_daily,
-            "reason": err_factor
-        })
-        time.sleep(SLEEP_SECONDS)
-        continue
+        ok_week, info_week = check_ma_order(df_week, "w")
+        if not ok_week:
+            fails.append({
+                "ts_code": ts_code,
+                "symbol6": symbol6,
+                "name": name,
+                **info_daily,
+                **info_factor,
+                **info_week
+            })
+            time.sleep(SLEEP_SECONDS)
+            continue
 
-    ok_factor, info_factor = check_daily_macd_factor(df_factor)
-    if not ok_factor:
-        fails.append({
-            "ts_code": ts_code,
-            "symbol6": symbol6,
-            "name": name,
-            **info_daily,
-            **info_factor
-        })
-        time.sleep(SLEEP_SECONDS)
-        continue
+        df_month, err_month = fetch_monthly(ts_code)
+        if df_month is None:
+            fails.append({
+                "ts_code": ts_code,
+                "symbol6": symbol6,
+                "name": name,
+                **info_daily,
+                **info_factor,
+                **info_week,
+                "reason": err_month
+            })
+            time.sleep(SLEEP_SECONDS)
+            continue
 
-    # 3) 周线条件
-    df_week, err_week = fetch_weekly(ts_code)
-    if df_week is None:
-        fails.append({
-            "ts_code": ts_code,
-            "symbol6": symbol6,
-            "name": name,
-            **info_daily,
-            **info_factor,
-            "reason": err_week
-        })
-        time.sleep(SLEEP_SECONDS)
-        continue
+        ok_month, info_month = check_ma_order(df_month, "m")
+        if not ok_month:
+            fails.append({
+                "ts_code": ts_code,
+                "symbol6": symbol6,
+                "name": name,
+                **info_daily,
+                **info_factor,
+                **info_week,
+                **info_month
+            })
+            time.sleep(SLEEP_SECONDS)
+            continue
 
-    ok_week, info_week = check_ma_order(df_week, "w")
-    if not ok_week:
-        fails.append({
-            "ts_code": ts_code,
-            "symbol6": symbol6,
-            "name": name,
-            **info_daily,
-            **info_factor,
-            **info_week
-        })
-        time.sleep(SLEEP_SECONDS)
-        continue
-
-    # 4) 月线条件
-    df_month, err_month = fetch_monthly(ts_code)
-    if df_month is None:
-        fails.append({
-            "ts_code": ts_code,
-            "symbol6": symbol6,
-            "name": name,
-            **info_daily,
-            **info_factor,
-            **info_week,
-            "reason": err_month
-        })
-        time.sleep(SLEEP_SECONDS)
-        continue
-
-    ok_month, info_month = check_ma_order(df_month, "m")
-    if not ok_month:
-        fails.append({
+        results.append({
             "ts_code": ts_code,
             "symbol6": symbol6,
             "name": name,
@@ -562,53 +591,39 @@ for i, row in universe_df.iterrows():
             **info_week,
             **info_month
         })
+
         time.sleep(SLEEP_SECONDS)
-        continue
 
-    # 全部通过
-    results.append({
-        "ts_code": ts_code,
-        "symbol6": symbol6,
-        "name": name,
-        **info_daily,
-        **info_factor,
-        **info_week,
-        **info_month
-    })
+    result_df = pd.DataFrame(results)
+    fail_df = pd.DataFrame(fails)
 
-    time.sleep(SLEEP_SECONDS)
+    result_path = os.path.join(OUTPUT_DIR, "tushare_scheme2_selected_exclude_8b.csv")
+    fail_path = os.path.join(OUTPUT_DIR, "tushare_scheme2_failed_exclude_8b.csv")
+
+    if not result_df.empty:
+        sort_cols = [c for c in ["dist_to_ma20", "dif_d"] if c in result_df.columns]
+        if sort_cols:
+            result_df = result_df.sort_values(sort_cols, ascending=[True] * len(sort_cols)).reset_index(drop=True)
+
+    result_df.to_csv(result_path, index=False, encoding="utf-8-sig")
+    fail_df.to_csv(fail_path, index=False, encoding="utf-8-sig")
+
+    print("\n扫描完成")
+    print(f"入选数量: {len(result_df)}")
+    print(f"失败/未通过数量: {len(fail_df)}")
+    print(f"入选文件: {result_path}")
+    print(f"失败文件: {fail_path}")
+
+    if not result_df.empty:
+        print("\n前20条入选结果：")
+        print(result_df.head(20).to_string(index=False))
+    else:
+        print("\n本次没有股票满足条件。")
+
+    if not fail_df.empty and "reason" in fail_df.columns:
+        print("\n失败原因统计前20项：")
+        print(fail_df["reason"].value_counts().head(20))
 
 
-# =========================
-# 7. 输出结果
-# =========================
-result_df = pd.DataFrame(results)
-fail_df = pd.DataFrame(fails)
-
-result_path = os.path.join(OUTPUT_DIR, "tushare_scheme2_selected_exclude_8b.csv")
-fail_path = os.path.join(OUTPUT_DIR, "tushare_scheme2_failed_exclude_8b.csv")
-
-if not result_df.empty:
-    sort_cols = [c for c in ["dist_to_ma20", "dif_d"] if c in result_df.columns]
-    if sort_cols:
-        ascending = [True] * len(sort_cols)
-        result_df = result_df.sort_values(sort_cols, ascending=ascending).reset_index(drop=True)
-
-result_df.to_csv(result_path, index=False, encoding="utf-8-sig")
-fail_df.to_csv(fail_path, index=False, encoding="utf-8-sig")
-
-print("\n扫描完成")
-print(f"入选数量: {len(result_df)}")
-print(f"失败/未通过数量: {len(fail_df)}")
-print(f"入选文件: {result_path}")
-print(f"失败文件: {fail_path}")
-
-if not result_df.empty:
-    print("\n前20条入选结果：")
-    print(result_df.head(20).to_string(index=False))
-else:
-    print("\n本次没有股票满足条件。")
-
-if not fail_df.empty and "reason" in fail_df.columns:
-    print("\n失败原因统计前20项：")
-    print(fail_df["reason"].value_counts().head(20))
+if __name__ == "__main__":
+    main()

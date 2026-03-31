@@ -59,7 +59,7 @@ jobs:
           username: ${{ secrets.SMTP_USER }}
           password: ${{ secrets.SMTP_PASS }}
           subject: A股选股结果 - ${{ github.run_number }}
-          to: ${{ secrets.MAIL_TO }}
+          to: ${{ secrets.EMAIL_TO }}
           from: ${{ secrets.SMTP_USER }}
           secure: true
           body: |

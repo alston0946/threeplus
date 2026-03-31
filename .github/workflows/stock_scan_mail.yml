@@ -61,7 +61,7 @@ jobs:
           subject: A股选股结果 - ${{ github.run_number }}
           to: ${{ secrets.EMAIL_TO }}
           from: ${{ secrets.SMTP_USER }}
-          secure: true
+          secure: false
           body: |
             本次 GitHub Actions 选股任务已完成。
 
